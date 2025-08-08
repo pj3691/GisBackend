@@ -1,9 +1,10 @@
 from skyfield.api import load, EarthSatellite, wgs84, utc
 from skyfield.timelib import Time
+from skyfield.toposlib import GeographicPosition
 from tle2czml.tle2czml import tles_to_czml
 
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import Callable, cast
 import json
 import os
 
@@ -194,7 +195,9 @@ class toTopsCaculator:
                         )
                     )
 
-    def getEventsFromResult(self, events, times, satellite, observer):
+    def getEventsFromResult(
+        self, events, times, satellite: EarthSatellite, observer: GeographicPosition
+    ):
         all_passes = []
         """过境结果
         """
@@ -212,24 +215,26 @@ class toTopsCaculator:
                 difference = satellite - observer
                 topocentric = difference.at(t_sample)
                 alt, az, distance = topocentric.altaz()
-                # 计算 10 秒前仰角判断升降状态
-                alt_prev = (
+                # 计算 2 秒后仰角判断升降状态
+                alt_after = cast(
+                    float,
                     (satellite - observer)
-                    .at(ts.utc(current - timedelta(seconds=10)))
+                    .at(ts.utc(current + timedelta(seconds=2)))
                     .altaz()[0]
-                    .degrees
+                    .degrees,
                 )
-                alt_now = alt.degrees
-                status = "升轨" if alt_now > alt_prev else "降轨"
-                pass_data.append(
-                    {
-                        "time": current.isoformat(),
-                        "elevation": round(alt_now, 2),
-                        "distance_km": round(distance.km, 2),
-                        "status": status,
-                    }
-                )
-                current += timedelta(seconds=5)
+                alt_now = cast(float, alt.degrees)
+                if (alt_after is not None) & (alt_now is not None):
+                    status = "升轨" if alt_after > alt_now else "降轨"
+                    pass_data.append(
+                        {
+                            "time": current.isoformat(),
+                            "elevation": round(alt_now, 2),
+                            "distance_km": round(cast(float, distance.km), 2),
+                            "status": status,
+                        }
+                    )
+                current += timedelta(seconds=2)
             all_passes.append(pass_data)
 
         # 写入过境结果
