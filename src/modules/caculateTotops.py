@@ -218,7 +218,6 @@ class toTopsCaculator:
                 geoPosition = satellite.at(t_sample)
                 lat, lon = wgs84.latlon_of(geoPosition)
                 h = wgs84.height_of(geoPosition)
-                print(lat.degrees)
                 # 计算 2 秒后仰角判断升降状态
                 alt_after = cast(
                     float,

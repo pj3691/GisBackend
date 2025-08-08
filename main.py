@@ -2,10 +2,10 @@ from flask import Flask, jsonify, send_from_directory, abort, request
 import json
 import os
 from src.modules.caculateTotops import toTopsCaculator
-
+import sys
 
 # 设置当前工作目录为 exe 所在目录（打包为exe时放开下面的注释）
-# os.chdir(os.path.dirname(sys.executable))
+os.chdir(os.path.dirname(sys.executable))
 out_base_dir = "./src/assets/"
 tles_dir = out_base_dir + "tles"
 czml_out_dir = out_base_dir + "output/czmlOut"
@@ -52,7 +52,6 @@ def convert():
     if convert_options is None:
         return jsonify({"error": "Missing convert_options"}), 400
     params = json.loads(convert_options)
-    print(params)
     czmlTimeOffset = params.get("timeOffset", czmlTimeOffset_default)
     altitude_degrees = params.get("altitudeDegrees", altitude_degrees_default)
     caculate_start_time = params.get("startTime", caculate_start_time_default)

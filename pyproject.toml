@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "flask>=3.1.1",
     "pygeoif==0.7",
+    "pyinstaller>=6.15.0",
     "setuptools>=80.9.0",
     "skyfield>=1.53",
     "tle2czml>=0.3",
