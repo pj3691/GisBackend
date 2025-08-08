@@ -1,4 +1,5 @@
-from skyfield.api import load, Topos, EarthSatellite, wgs84
+from skyfield.api import load, EarthSatellite, wgs84, utc
+from skyfield.timelib import Time
 from tle2czml.tle2czml import tles_to_czml
 
 from datetime import datetime, timedelta
@@ -7,10 +8,7 @@ import json
 import os
 
 
-# 获取时间范围（当前时间往后 1 天）
 ts = load.timescale()
-t0 = ts.now()
-t1 = ts.utc(t0.utc_datetime() + timedelta(days=50))
 # 加载天文常数并创建观测场景
 eph = load("./src/assets/de421.bsp")
 earth = eph["earth"]
@@ -19,10 +17,12 @@ earth = eph["earth"]
 class toTopsCaculator:
     """_summary_"""
 
-    caculate_time_start = ts.now()
+    caculate_time_start: Time = ts.now()
     """计算开始时间
     """
-    caculate_time_start = ts.utc(t0.utc_datetime() + timedelta(days=50))
+    caculate_time_end: Time = ts.utc(
+        caculate_time_start.utc_datetime() + timedelta(days=50)
+    )
     """计算结束时间
     """
     czmlTimeOffset = 0
@@ -47,6 +47,8 @@ class toTopsCaculator:
     def __init__(
         self,
         czmlTimeOffset: float,
+        caculate_time_start: str,
+        caculate_time_end: str,
         altitude_degrees: float,
         target_czml_out_path: str,
         tles_dir: str,
@@ -57,6 +59,8 @@ class toTopsCaculator:
 
         Args:
             czmlTimeOffset (float): czml计算时间偏移
+            caculate_time_start (Time): czml计算开始时间 格式：2025-05-31 00:00:00
+            caculate_time_end (Time): czml计算结束时间
             altitude_degrees (float): 过境最小天顶角
             target_czml_out_path (str): 要计算的czml文件输出路径
             tles_dir (str): 默认tle存放的文件夹
@@ -70,13 +74,28 @@ class toTopsCaculator:
         self.tles_dir = tles_dir
         self.czml_out_dir = czml_out_dir
         self.toTopRes_out_dir = toTopRes_out_dir
+        self.caculate_time_start = ts.from_datetime(
+            datetime.strptime(caculate_time_start, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=utc
+            )
+        )
+        self.caculate_time_end = ts.from_datetime(
+            datetime.strptime(caculate_time_end, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=utc
+            )
+        )
 
     def setTargetCzml(
-        self, resJson, file_content: str, callback: Callable | None = None
+        self,
+        LLA: list[float],
+        resJson,
+        file_content: str,
+        callback: Callable | None = None,
     ):
         """通过前端传入的tle计算过境时间以及对应的czml
 
         Args:
+            LLA (list[float]): 经纬高数组
             resJson (_type_): 输出的fontendConfig.json的内容
             file_content (_type_): tle文件的内容
             callback (_type_, optional): 回调函数. Defaults to None.
@@ -93,13 +112,16 @@ class toTopsCaculator:
             satellite = EarthSatellite(line1, line2, name, ts)
             # 设置观察点
             observer = wgs84.latlon(
-                latitude_degrees=41.76502,
-                longitude_degrees=86.11528,
-                elevation_m=0,
+                longitude_degrees=LLA[0],
+                latitude_degrees=LLA[1],
+                elevation_m=LLA[2],
             )
             # 查找过境事件
             times, events = satellite.find_events(
-                observer, t0, t1, altitude_degrees=self.altitude_degrees
+                observer,
+                self.caculate_time_start,
+                self.caculate_time_end,
+                altitude_degrees=self.altitude_degrees,
             )
             self.getEventsFromResult(events, times, satellite, observer)
             eventsMap = [event for event in list(zip(times, events)) if event[1] == 1]

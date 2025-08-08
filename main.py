@@ -1,10 +1,6 @@
 from flask import Flask, jsonify, send_from_directory, abort, request
-from skyfield.api import load, Topos, EarthSatellite, wgs84
-from tle2czml.tle2czml import tles_to_czml
-from datetime import datetime, timedelta
 import json
 import os
-import sys
 from src.modules.caculateTotops import toTopsCaculator
 
 
@@ -20,6 +16,9 @@ os.makedirs(czml_out_dir, exist_ok=True)
 
 czmlTimeOffset_default = 20
 altitude_degrees_default = 88
+caculate_start_time_default = "2025-05-31 00:00:00"
+caculate_end_time_default = "2025-06-02 00:00:00"
+LLA_default = [120, 40, 0]
 
 app = Flask(__name__)
 
@@ -53,14 +52,19 @@ def convert():
     if convert_options is None:
         return jsonify({"error": "Missing convert_options"}), 400
     params = json.loads(convert_options)
+    print(params)
     czmlTimeOffset = params.get("timeOffset", czmlTimeOffset_default)
     altitude_degrees = params.get("altitudeDegrees", altitude_degrees_default)
-
+    caculate_start_time = params.get("startTime", caculate_start_time_default)
+    caculate_end_time = params.get("endTime", caculate_end_time_default)
+    LLA = params.get("LLA", LLA_default)
     try:
         resJson = {"default": [], "czml": []}
         file_content = file.read().decode("utf-8")
         toTopsCaculatorNew = toTopsCaculator(
             czmlTimeOffset,
+            caculate_start_time,
+            caculate_end_time,
             altitude_degrees,
             target_czml_out_path,
             tles_dir,
@@ -68,6 +72,7 @@ def convert():
             toTopRes_out_dir,
         )
         toTopsCaculatorNew.setTargetCzml(
+            LLA,
             resJson,
             file_content,
             # toTopsCaculatorNew.setDefaultCzml,
