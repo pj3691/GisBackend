@@ -215,6 +215,10 @@ class toTopsCaculator:
                 difference = satellite - observer
                 topocentric = difference.at(t_sample)
                 alt, az, distance = topocentric.altaz()
+                geoPosition = satellite.at(t_sample)
+                lat, lon = wgs84.latlon_of(geoPosition)
+                h = wgs84.height_of(geoPosition)
+                print(lat.degrees)
                 # 计算 2 秒后仰角判断升降状态
                 alt_after = cast(
                     float,
@@ -232,6 +236,7 @@ class toTopsCaculator:
                             "elevation": round(alt_now, 2),
                             "distance_km": round(cast(float, distance.km), 2),
                             "status": status,
+                            "LLA": [lon.degrees, lat.degrees, h.km],
                         }
                     )
                 current += timedelta(seconds=2)
