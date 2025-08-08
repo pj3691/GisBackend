@@ -1,0 +1,9 @@
+{
+  "default": [],
+  "czml": [
+    {
+      "tle_file": "",
+      "czmlFile": "/output/outResult.czml"
+    }
+  ]
+}
