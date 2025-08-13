@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "flask>=3.1.1",
+    "pandas>=2.3.1",
     "pygeoif==0.7",
     "pyinstaller>=6.15.0",
     "setuptools>=80.9.0",

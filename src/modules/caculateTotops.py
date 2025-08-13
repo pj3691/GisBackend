@@ -1,7 +1,12 @@
 from skyfield.api import load, EarthSatellite, wgs84, utc
 from skyfield.timelib import Time
 from skyfield.toposlib import GeographicPosition
+from skyfield.vectorlib import VectorSum
+from skyfield.positionlib import Barycentric
+from skyfield.data import mpc
 from tle2czml.tle2czml import tles_to_czml
+import numpy as np
+
 
 from datetime import datetime, timedelta
 from typing import Callable, cast
@@ -13,6 +18,8 @@ ts = load.timescale()
 # 加载天文常数并创建观测场景
 eph = load("./src/assets/de421.bsp")
 earth = eph["earth"]
+sun = eph["Sun"]
+moon = eph["Moon"]
 
 
 class toTopsCaculator:
@@ -213,6 +220,34 @@ class toTopsCaculator:
             while current <= t_end:
                 t_sample = ts.utc(current)
                 difference = satellite - observer
+
+                observer_position = observer.at(t_sample)
+                satellite_position = satellite.at(t_sample)
+                sun_position = earth.at(t_sample).observe(sun)
+                moon_position = earth.at(t_sample).observe(moon)
+
+                # 计算位置向量
+                obs_vec = np.array(observer_position.position.km)
+                sat_vec = np.array(satellite_position.position.km)
+                sun_vec = np.array(sun_position.position.km)
+                moon_vec = np.array(moon_position.position.km)
+
+                # 计算方向向量
+                sat_obs_vec = np.subtract(sat_vec, obs_vec)
+                sun_obs_vec = np.subtract(sun_vec, obs_vec)
+                moon_obs_vec = np.subtract(moon_vec, obs_vec)
+
+                # 计算太阳夹角
+                cos_sat_obs_sun = np.dot(sat_obs_vec, sun_obs_vec) / (
+                    np.linalg.norm(sat_vec) * np.linalg.norm(sun_vec)
+                )
+                angle_sat_sun = np.arccos(cos_sat_obs_sun) * 180 / np.pi
+                # 计算月亮夹角
+                cos_sat_obs_moon = np.dot(sat_obs_vec, moon_obs_vec) / (
+                    np.linalg.norm(sat_vec) * np.linalg.norm(moon_vec)
+                )
+                angle_sat_moon = np.arccos(cos_sat_obs_moon) * 180 / np.pi
+
                 topocentric = difference.at(t_sample)
                 alt, az, distance = topocentric.altaz()
                 geoPosition = satellite.at(t_sample)
@@ -235,6 +270,8 @@ class toTopsCaculator:
                             "elevation": round(alt_now, 2),
                             "distance_km": round(cast(float, distance.km), 2),
                             "status": status,
+                            "sunAngle": angle_sat_sun,
+                            "moonAngle": angle_sat_moon,
                             "LLA": [lon.degrees, lat.degrees, h.km],
                         }
                     )

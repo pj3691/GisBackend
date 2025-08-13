@@ -2,10 +2,10 @@ from flask import Flask, jsonify, send_from_directory, abort, request
 import json
 import os
 from src.modules.caculateTotops import toTopsCaculator
-import sys
+# import sys
 
 # 设置当前工作目录为 exe 所在目录（打包为exe时放开下面的注释）
-os.chdir(os.path.dirname(sys.executable))
+# os.chdir(os.path.dirname(sys.executable))
 out_base_dir = "./src/assets/"
 tles_dir = out_base_dir + "tles"
 czml_out_dir = out_base_dir + "output/czmlOut"
