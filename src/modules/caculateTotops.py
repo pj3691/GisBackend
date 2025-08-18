@@ -8,7 +8,7 @@ from tle2czml.tle2czml import tles_to_czml
 import numpy as np
 
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Callable, cast
 import json
 import os
@@ -20,6 +20,7 @@ eph = load("./src/assets/de421.bsp")
 earth = eph["earth"]
 sun = eph["Sun"]
 moon = eph["Moon"]
+utc8 = timezone(timedelta(hours=8))
 
 
 class toTopsCaculator:
@@ -139,7 +140,9 @@ class toTopsCaculator:
                     # 写入czml结果数据
                     czml_data = tles_to_czml(
                         file_content,
-                        start_time=datetime.fromisoformat(eventsMap[0][0].utc_iso())
+                        start_time=datetime.fromisoformat(
+                            list(zip(times, events))[0][0].utc_iso()
+                        )
                         - timedelta(seconds=self.czmlTimeOffset),
                     )
                     with open(self.target_czml_out_path, "w") as f:
@@ -257,7 +260,7 @@ class toTopsCaculator:
                 alt_after = cast(
                     float,
                     (satellite - observer)
-                    .at(ts.utc(current + timedelta(seconds=2)))
+                    .at(ts.utc(current + timedelta(seconds=1)))
                     .altaz()[0]
                     .degrees,
                 )
@@ -266,7 +269,7 @@ class toTopsCaculator:
                     status = "升轨" if alt_after > alt_now else "降轨"
                     pass_data.append(
                         {
-                            "time": current.isoformat(),
+                            "time": current.astimezone(utc8).isoformat(),
                             "elevation": round(alt_now, 2),
                             "distance_km": round(cast(float, distance.km), 2),
                             "status": status,
@@ -275,7 +278,7 @@ class toTopsCaculator:
                             "LLA": [lon.degrees, lat.degrees, h.km],
                         }
                     )
-                current += timedelta(seconds=2)
+                current += timedelta(seconds=1)
             all_passes.append(pass_data)
 
         # 写入过境结果
