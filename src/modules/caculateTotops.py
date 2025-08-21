@@ -6,6 +6,8 @@ from skyfield.positionlib import Barycentric
 from skyfield.data import mpc
 from tle2czml.tle2czml import tles_to_czml
 import numpy as np
+import math
+from sgp4.earth_gravity import wgs72
 
 
 from datetime import datetime, timezone, timedelta
@@ -85,12 +87,12 @@ class toTopsCaculator:
         self.toTopRes_out_dir = toTopRes_out_dir
         self.caculate_time_start = ts.from_datetime(
             datetime.strptime(caculate_time_start, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=utc
+                tzinfo=utc8
             )
         )
         self.caculate_time_end = ts.from_datetime(
             datetime.strptime(caculate_time_end, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=utc
+                tzinfo=utc8
             )
         )
 
@@ -140,10 +142,12 @@ class toTopsCaculator:
                     # 写入czml结果数据
                     czml_data = tles_to_czml(
                         file_content,
-                        start_time=datetime.fromisoformat(
-                            list(zip(times, events))[0][0].utc_iso()
-                        )
-                        - timedelta(seconds=self.czmlTimeOffset),
+                        start_time=datetime.strptime(
+                            "2025-06-04 00:00:00", "%Y-%m-%d %H:%M:%S"
+                        ).replace(tzinfo=timezone.utc),
+                        end_time=datetime.strptime(
+                            "2025-06-09 00:00:00", "%Y-%m-%d %H:%M:%S"
+                        ).replace(tzinfo=timezone.utc),
                     )
                     with open(self.target_czml_out_path, "w") as f:
                         f.write(czml_data)
@@ -287,3 +291,44 @@ class toTopsCaculator:
                 json.dump(all_passes, fw, ensure_ascii=False, indent=2)
         except FileNotFoundError as e:
             print(e)
+
+    def geocentric_to_wgs72(self, geo):
+        """
+        输入: geo = Skyfield Geocentric 对象
+        输出: lat, lon, alt 对应 WGS72 椭球
+        lat/lon 单位: 度
+        alt 单位: km
+        """
+        x, y, z = geo.position.km  # 获取地心坐标 km
+
+        # WGS72 椭球参数
+        a = wgs72.radiusearthkm  # 赤道半径
+        f = 1 / 298.26  # 扁率
+        b = a * (1 - f)  # 极半径
+        e2 = (a**2 - b**2) / a**2  # 第一偏心率平方
+
+        # 经度
+        lon = math.atan2(y, x)
+
+        # 初始纬度估计
+        r = math.sqrt(x**2 + y**2)
+        lat = math.atan2(z, r)
+
+        # 迭代求纬度
+        lat_prev = 0
+        iteration = 0
+        while abs(lat - lat_prev) > 1e-10 and iteration < 10:
+            lat_prev = lat
+            N = a / math.sqrt(1 - e2 * math.sin(lat) ** 2)
+            lat = math.atan2(z + e2 * N * math.sin(lat), r)
+            iteration += 1
+
+        # 高度
+        N = a / math.sqrt(1 - e2 * math.sin(lat) ** 2)
+        alt = r / math.cos(lat) - N
+
+        # 转换成度
+        lat_deg = math.degrees(lat)
+        lon_deg = math.degrees(lon)
+
+        return lat_deg, lon_deg, alt
