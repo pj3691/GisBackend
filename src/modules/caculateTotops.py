@@ -17,7 +17,7 @@ import os
 
 
 ts = load.timescale()
-# 加载天文常数并创建观测场景
+# 加载天文常数并创建观测场景 
 eph = load("./src/assets/de421.bsp")
 earth = eph["earth"]
 sun = eph["Sun"]
@@ -260,20 +260,19 @@ class toTopsCaculator:
                 geoPosition = satellite.at(t_sample)
                 lat, lon = wgs84.latlon_of(geoPosition)
                 h = wgs84.height_of(geoPosition)
-                # 计算 2 秒后仰角判断升降状态
+                # 计算 2 秒后仰角判断升降状态 latitude
                 alt_after = cast(
                     float,
-                    (satellite - observer)
-                    .at(ts.utc(current + timedelta(seconds=1)))
-                    .altaz()[0]
-                    .degrees,
+                    wgs84.latlon_of(
+                        satellite.at(ts.utc(current + timedelta(seconds=1)))
+                    )[0].degrees,
                 )
-                alt_now = cast(float, alt.degrees)
+                alt_now = cast(float, lat.degrees)
                 if (alt_after is not None) & (alt_now is not None):
                     status = "升轨" if alt_after > alt_now else "降轨"
                     pass_data.append(
                         {
-                            "time": current.astimezone(utc8).isoformat(),
+                            "time": (current - timedelta(hours=8)).isoformat(),
                             "elevation": round(alt_now, 2),
                             "distance_km": round(cast(float, distance.km), 2),
                             "status": status,
