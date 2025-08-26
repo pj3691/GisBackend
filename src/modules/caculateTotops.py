@@ -17,7 +17,7 @@ import os
 
 
 ts = load.timescale()
-# 加载天文常数并创建观测场景 
+# 加载天文常数并创建观测场景
 eph = load("./src/assets/de421.bsp")
 earth = eph["earth"]
 sun = eph["Sun"]
@@ -26,34 +26,26 @@ utc8 = timezone(timedelta(hours=8))
 
 
 class toTopsCaculator:
-    """_summary_"""
+    """卫星过境计算并输出czml文件"""
 
     caculate_time_start: Time = ts.now()
-    """计算开始时间
-    """
+    """计算开始时间"""
     caculate_time_end: Time = ts.utc(
         caculate_time_start.utc_datetime() + timedelta(days=50)
     )
-    """计算结束时间
-    """
+    """计算结束时间"""
     czmlTimeOffset = 0
-    """czml计算时间偏移
-    """
+    """czml计算时间偏移"""
     altitude_degrees = 0
-    """过境最小天顶角
-    """
+    """过境最小天顶角"""
     target_czml_out_path = ""
-    """要计算的czml文件输出路径
-    """
+    """要计算的czml文件输出路径"""
     tles_dir = ""
-    """默认tle存放的文件夹
-    """
+    """默认tle存放的文件夹"""
     czml_out_dir = ""
-    """默认tle计算的czml存放的文件夹
-    """
+    """默认tle计算的czml存放的文件夹"""
     toTopRes_out_dir = ""
-    """过境结果存放文件夹
-    """
+    """过境结果存放文件夹"""
 
     def __init__(
         self,
@@ -139,7 +131,7 @@ class toTopsCaculator:
 
             if len(eventsMap) > 0:
                 try:
-                    # 写入czml结果数据
+                    # 生成并写入czml结果数据
                     czml_data = tles_to_czml(
                         file_content,
                         start_time=datetime.strptime(
@@ -230,8 +222,8 @@ class toTopsCaculator:
 
                 observer_position = observer.at(t_sample)
                 satellite_position = satellite.at(t_sample)
-                sun_position = earth.at(t_sample).observe(sun)
-                moon_position = earth.at(t_sample).observe(moon)
+                sun_position = earth.at(t_sample).observe(sun)  # type: ignore
+                moon_position = earth.at(t_sample).observe(moon)  # type: ignore
 
                 # 计算位置向量
                 obs_vec = np.array(observer_position.position.km)
