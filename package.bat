@@ -1,1 +1,0 @@
- .\.venv\Scripts\pyinstaller.exe --onefile --add-data "D:/1-WorkFile/program/tle2czmlUv/.venv/Lib/site-packages/tle2czml/*;tle2czml" .\main.py 
