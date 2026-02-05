@@ -5,8 +5,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -16,12 +20,17 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.ResourceLoader;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+
+import org.apache.commons.math3.util.FastMath;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.orekit.bodies.GeodeticPoint;
 import org.orekit.bodies.OneAxisEllipsoid;
 import org.orekit.data.DataContext;
 import org.orekit.data.DataProvidersManager;
 import org.orekit.data.DirectoryCrawler;
+import org.orekit.frames.Frame;
 import org.orekit.frames.FramesFactory;
 import org.orekit.frames.TopocentricFrame;
 import org.orekit.propagation.SpacecraftState;
@@ -40,17 +49,29 @@ import org.orekit.time.TimeScale;
 import org.orekit.time.TimeScalesFactory;
 import org.orekit.utils.IERSConventions;
 import org.orekit.utils.PVCoordinates;
+import org.orekit.propagation.events.ExtremumApproachDetector;
+import org.orekit.propagation.events.handlers.EventHandler;
+import org.hipparchus.ode.events.Action;
 import org.orekit.utils.Constants;
+import org.orekit.propagation.numerical.NumericalPropagator;
+import org.orekit.propagation.events.EventSlopeFilter;
+import org.orekit.propagation.events.FilterType;
 
 /**
  * 卫星类
  */
 public class Satellite {
+    /** 卫星源tle文件 */
     public String[] rawTle;
+    /** 构造的orikit tle对象 */
     public TLE tleObject;
+    /** 卫星的传播器，用于计算轨道 */
     public TLEPropagator propagator;
+    /** 卫星名称 */
     public String satName;
+    /** 卫星周期 */
     public double orbitalMinutes;
+    public double orbitalAltitude;
 
     /**
      * 构造一个卫星
@@ -80,11 +101,21 @@ public class Satellite {
             this.tleObject = tleObject;
             this.satName = rawTle[0].trim();
             this.orbitalMinutes = (24.0 / revsPerDay) * 60.0;
+
+            SpacecraftState state = this.propagator.getInitialState();
+            this.orbitalAltitude = state.getPVCoordinates().getPosition().getNorm() - Constants.WGS84_EARTH_EQUATORIAL_RADIUS;
         } catch (IOException e) {
             throw new RuntimeException("Failed to load orekit-data from classpath", e);
         }
     }
 
+    // === 时间转换相关方法 =================
+    /**
+     * 字符串转为AbsoluteDate
+     * 
+     * @param dateStr 时间字符串，eg.2025-09-01 03:57:01
+     * @return
+     */
     public AbsoluteDate strToAbsoluteDate(String dateStr) {
         // 拆分日期和时间
         String[] parts = dateStr.split(" ");
@@ -105,55 +136,48 @@ public class Satellite {
         TimeScale utc = TimeScalesFactory.getUTC();
 
         // 创建 AbsoluteDate
-        return new AbsoluteDate(
-                new DateComponents(year, month, day),
-                new TimeComponents(hour, minute, second),
-                utc);
+        return new AbsoluteDate(new DateComponents(year, month, day), new TimeComponents(hour, minute, second), utc);
     }
 
     /**
-     * 判断卫星在某个时刻是否经过某个位置
+     * 字符串转为ZonedDateTime
      * 
-     * @param targetDateStr    计算过境的时间字符串 eg 2025-10-11 15:24:41
-     * @param observerPosition 计算过境的位置 eg new Double[] { 120.0, 40.0, 0.0 }
-     * @param toTopAngle       过境的天顶角（当计算出的天顶角小于这个角度时则判定为过境）
-     * @return 是否过境
+     * @param timeStr 时间字符串，eg.2025-09-01 03:57:01
+     * @return
      */
-    public Boolean isToTop(String targetDateStr, Double[] observerPosition, Double toTopAngle) {
-        AbsoluteDate targetDate = this.strToAbsoluteDate(targetDateStr);
-        SpacecraftState state = propagator.propagate(targetDate);
+    public ZonedDateTime parseUtcZonedDateTime(String timeStr) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-        // 5) 观测点经纬高（radians, radians, meters）
-        double lonDeg = observerPosition[0]; // 经度
-        double latDeg = observerPosition[1]; // 纬度
-        double altM = observerPosition[2]; // 高度（m）
+        LocalDateTime localDateTime = LocalDateTime.parse(timeStr, formatter);
 
-        GeodeticPoint obsPoint = new GeodeticPoint(Math.toRadians(latDeg),
-                Math.toRadians(lonDeg),
-                altM);
-
-        // 6) 地球椭球体（ITRF，WGS84）
-        OneAxisEllipsoid earth = new OneAxisEllipsoid(
-                Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
-                Constants.WGS84_EARTH_FLATTENING,
-                FramesFactory.getITRF(IERSConventions.IERS_2010, true));
-
-        // 7) 构造 TopocentricFrame（局部天顶框，Z 指向本地天顶）
-        TopocentricFrame topo = new TopocentricFrame(earth, obsPoint, "observer");
-
-        // 8) 得到卫星在 state.frame 中的位置向量（Vector3D）
-        PVCoordinates pvInStateFrame = state.getPVCoordinates();
-        Vector3D satPos = pvInStateFrame.getPosition(); // 在 state.getFrame() 所表达的坐标系中
-
-        // 9) 计算仰角（rad），方法：topo.getElevation(extPoint, frame, date)
-        double elevationRad = topo.getElevation(satPos, state.getFrame(), targetDate);
-
-        // 天顶角 = 90° - elevation
-
-        double zenithRad = Math.toDegrees(Math.PI / 2.0 - elevationRad);
-
-        return zenithRad < toTopAngle;
+        return ZonedDateTime.of(localDateTime, ZoneOffset.UTC);
     }
+
+    /**
+     * 字符串转为ZonedDateTime
+     * 
+     * @param timeStr 时间字符串，eg.2025-09-01 03:57:01
+     * @return
+     */
+    public ZonedDateTime dateStringToZonedDateTime(String timeStr) {
+        // 1. 解析成 LocalDateTime（没有时区信息）
+        LocalDateTime localDateTime = LocalDateTime.parse(timeStr, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+
+        // 2. 指定时区，得到 ZonedDateTime
+        return ZonedDateTime.of(localDateTime, ZoneOffset.UTC);
+    }
+
+    /**
+     * ZonedDateTime转AbsoluteDate
+     * 
+     * @param dateTime
+     * @return
+     */
+    public AbsoluteDate getAbsDate(ZonedDateTime dateTime) {
+        return new AbsoluteDate(dateTime.getYear(), dateTime.getMonthValue(), dateTime.getDayOfMonth(), dateTime.getHour(), dateTime.getMinute(),
+                dateTime.getSecond() + dateTime.getNano() * 1.0e-9, TimeScalesFactory.getUTC());
+    }
+    // === 时间转换相关方法 =================
 
     /**
      * 获取某个时间段卫星的路径czml
@@ -164,8 +188,7 @@ public class Satellite {
      * @return czml字符串（可用于导出为.czml 或者 .json 文件）
      * @throws Exception
      */
-    public String getCzmlDocString(ZonedDateTime start, ZonedDateTime end, Optional<int[]> rgbaOptional)
-            throws Exception {
+    public String getCzmlDocString(ZonedDateTime start, ZonedDateTime end, Optional<int[]> rgbaOptional) throws Exception {
         if (start == null)
             start = ZonedDateTime.now(ZoneOffset.UTC);
         if (end == null)
@@ -175,115 +198,167 @@ public class Satellite {
         return czmlDocString;
     }
 
-    public class toTopEvent {
-        public double elevate;
-        public String timeString;
-        public String eventNameString;
+    class TimeValue {
+        public final double lon;
+        public final double lat;
+        public final double h;
+        public final String time;
+        public final double elevation;
+        public final String state;
 
-        toTopEvent(double elevate, String timeString, String eventNameString) {
-            this.elevate = elevate;
-            this.timeString = timeString;
-            this.eventNameString = eventNameString;
+        public TimeValue(double lon, double lat, double h, String time, double elevation, String state) {
+            this.lon = lon;
+            this.lat = lat;
+            this.h = h;
+            this.time = time;
+            this.elevation = elevation;
+            this.state = state;
         }
-
     }
 
-    public String toTopEventDetect(AbsoluteDate start, AbsoluteDate end, Double[] observerPosition,
-            Double toTopAngle) {
-        // 初始化地球模型和地面站
-        OneAxisEllipsoid earth = new OneAxisEllipsoid(
-                Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
-                Constants.WGS84_EARTH_FLATTENING,
+    // === 事件检测相关方法 =================
+    public List<TimeValue> calculateTransits(AbsoluteDate startAbsDate, AbsoluteDate endAbsDate, double longitude, double latitude, double altitude,
+            double minElevation, double maxCheck, double threshold) {
+        List<TimeValue> transitTimes = new ArrayList<>();
+
+        // 定义观察者的位置
+        GeodeticPoint observerPoint = new GeodeticPoint(Math.toRadians(latitude), Math.toRadians(longitude), altitude);
+        OneAxisEllipsoid earth = new OneAxisEllipsoid(Constants.WGS84_EARTH_EQUATORIAL_RADIUS, Constants.WGS84_EARTH_FLATTENING,
                 FramesFactory.getITRF(IERSConventions.IERS_2010, true));
-        GeodeticPoint stationGeo = new GeodeticPoint(
-                Math.toRadians(observerPosition[0]), // 纬度
-                Math.toRadians(observerPosition[1]), // 经度
-                observerPosition[2] // 地面站高度
-        );
+        TopocentricFrame observerFrame = new TopocentricFrame(earth, observerPoint, "Observer");
+        final Frame earthFrame = FramesFactory.getITRF(IERSConventions.IERS_2010, true);
 
-        TopocentricFrame stationFrame = new TopocentricFrame(earth, stationGeo, "Station");
+        // 构造ElevationDetector
+        ElevationDetector elevationDetector = new ElevationDetector(maxCheck, threshold, observerFrame).withConstantElevation(Math.toRadians(80))
+                .withHandler((s, detector, increasing) -> {
+                    PVCoordinates pvCoordinates = s.getPVCoordinates(earthFrame);
+                    GeodeticPoint geodeticPoint = earth.transform(pvCoordinates.getPosition(), earthFrame, s.getDate());
+                    double lat = FastMath.toDegrees(geodeticPoint.getLatitude());
+                    double lon = FastMath.toDegrees(geodeticPoint.getLongitude());
+                    double h = FastMath.toDegrees(geodeticPoint.getAltitude());
+                    Double ele = FastMath.toDegrees(observerFrame.getElevation(pvCoordinates.getPosition(), earthFrame, s.getDate()));
+                    AbsoluteDate date = s.getDate();
+                    String dateString = date.toString(TimeScalesFactory.getUTC());
+                    transitTimes.add(new TimeValue(lon, lat, h, dateString, ele, increasing ? "升轨" : "降轨"));
+                    return Action.CONTINUE;
+                });
+        ;
 
-        // 创建 ElevationDetector：最低仰角
-        double minElevation = Math.toRadians(toTopAngle);
-        ElevationDetector elevationDetector = new ElevationDetector(stationFrame)
-                .withConstantElevation(minElevation)
-                .withHandler(new ContinueOnEvent());
-
-        // 检测仰角极值 (最高点)
-        ElevationExtremumDetector maxElevDetector = new ElevationExtremumDetector(stationFrame)
-                .withThreshold(1e-6)
-                .withHandler(new ContinueOnEvent());
-
-        // 添加检测器
         this.propagator.addEventDetector(elevationDetector);
-        this.propagator.addEventDetector(maxElevDetector);
 
-        // 用 EventsLogger 记录事件
-        EventsLogger logger = new EventsLogger();
-        logger.monitorDetector(elevationDetector);
-        logger.monitorDetector(maxElevDetector);
+        // 传播卫星状态并检测事件
+        this.propagator.propagate(startAbsDate, endAbsDate);
 
-        propagator.propagate(start, end);
-
-        List<toTopEvent> toTopEventsList = new ArrayList<toTopEvent>();
-        System.out.println(logger.getLoggedEvents());
-        // 读取检测到的事件
-        for (LoggedEvent evt : logger.getLoggedEvents()) {
-
-            EventDetector detector = evt.getEventDetector();
-            AbsoluteDate date = evt.getState().getDate();
-            PVCoordinates pv = evt.getState().getPVCoordinates(evt.getState().getFrame());
-            TopocentricFrame topo = ((ElevationDetector) detector).getTopocentricFrame();
-            Vector3D satTopo = topo.getTransformTo(evt.getState().getFrame(), date)
-                    .transformPosition(pv.getPosition());
-            double elevation = Math.asin(satTopo.getZ() / satTopo.getNorm());
-            double elevationDeg = Math.toDegrees(elevation);
-
-            // --- AOS：卫星上升穿越地平线 ---
-            if (detector instanceof ElevationDetector && evt.isIncreasing()) {
-                toTopEventsList.add(new toTopEvent(elevationDeg, evt.getState().getDate().toString(), "UP"));
-            }
-
-            // --- LOS：卫星下降穿越地平线 ---
-            if (detector instanceof ElevationDetector && !evt.isIncreasing()) {
-                toTopEventsList.add(new toTopEvent(elevationDeg, evt.getState().getDate().toString(), "DOWN"));
-
-            }
-
-            // --- MAX：仰角达到最大值 ---
-            if (detector instanceof ElevationExtremumDetector) {
-                toTopEventsList.add(new toTopEvent(elevationDeg, evt.getState().getDate().toString(), "MAX"));
-            }
-
-        }
-
-        return toTopEventsList.toString();
-
+        return transitTimes;
     }
+
+    /**
+     * 检测与另一个卫星的交会时间
+     * 
+     * @param startAbsDate         检测开始时间
+     * @param endAbsDate           检测结束时间
+     * @param satellite            另一个卫星实例
+     * @param minDistanceThreshold 最小检测距离
+     * @param maxDistanceThreshold 最大检测距离
+     * @return 检测到的交会时间
+     */
+    public ZonedDateTime getApproachEvent(AbsoluteDate startAbsDate, AbsoluteDate endAbsDate, Satellite satellite, double minDistanceThreshold,
+            double maxDistanceThreshold) {
+        ExtremumApproachDetector approachDetector = new ExtremumApproachDetector(satellite.propagator).withThreshold(1.0e-3);
+
+        approachDetector = approachDetector.withHandler(new EventHandler() {
+            @Override
+            public Action eventOccurred(SpacecraftState s, EventDetector detector, boolean increasing) {
+                PVCoordinates pvSat1 = s.getPVCoordinates();
+                PVCoordinates pvSat2 = satellite.propagator.propagate(s.getDate()).getPVCoordinates();
+                double distance = pvSat1.getPosition().distance(pvSat2.getPosition());
+                if (distance < maxDistanceThreshold && distance > minDistanceThreshold) {
+                    // 满足距离阈值，触发事件
+                    return Action.STOP;
+                }
+                return Action.CONTINUE;
+            }
+        });
+
+        EventDetector closeApproachDetector = new EventSlopeFilter<ExtremumApproachDetector>(approachDetector,
+                FilterType.TRIGGER_ONLY_INCREASING_EVENTS);
+
+        // 注册探测器
+        this.propagator.addEventDetector(closeApproachDetector);
+
+        // 执行传播
+        SpacecraftState state = this.propagator.propagate(startAbsDate, endAbsDate);
+
+        // System.out.println(state.getDate());
+        return ZonedDateTime.ofInstant(state.getDate().toDate(TimeScalesFactory.getUTC()).toInstant(), ZoneOffset.UTC);
+    }
+    // === 事件检测相关方法 =================
 
     public static void main(String[] args) {
         ResourceLoader resourceLoader = new DefaultResourceLoader();
-        Resource resource = resourceLoader.getResource("classpath:/statics/tles/GF-7.tle");
-        try (InputStream is = resource.getInputStream()) {
+        Resource resource = resourceLoader.getResource("classpath:/statics/tles/STARLINK.tle");
+        Resource resource2 = resourceLoader.getResource("classpath:/statics/tles/ISS.tle");
+        Resource resource3 = resourceLoader.getResource("classpath:/statics/tles/GF-7.tle");
+        try (InputStream is = resource.getInputStream(); InputStream is2 = resource2.getInputStream(); InputStream is3 = resource3.getInputStream()) {
             // 构造一个卫星
             String te1 = new String(is.readAllBytes(), StandardCharsets.UTF_8);
             String[] lines = te1.split("\n");
             String[] raw = new String[] { lines[0], lines[1], lines[2] };
             Satellite satellite = new Satellite(raw, "/statics/orekit-data");
 
-            // 是否过境检测示例
-            boolean isToTopRes = satellite.isToTop("2025-10-11 15:24:41", new Double[] { 120.0, 40.0, 0.0 }, 20.0);
+            // 构造卫星2
+            String te2 = new String(is2.readAllBytes(), StandardCharsets.UTF_8);
+            String[] lines2 = te2.split("\n");
+            String[] raw2 = new String[] { lines2[0], lines2[1], lines2[2] };
+            Satellite satellite2 = new Satellite(raw2, "/statics/orekit-data");
+
+            // 构造卫星2
+            String te3 = new String(is3.readAllBytes(), StandardCharsets.UTF_8);
+            String[] lines3 = te3.split("\n");
+            String[] raw3 = new String[] { lines3[0], lines3[1], lines3[2] };
+            Satellite satellite3 = new Satellite(raw3, "/statics/orekit-data");
+
             // 生成czml路径文件示例
-            ZonedDateTime start = ZonedDateTime.now(ZoneOffset.UTC);
-            ZonedDateTime end = start.plusHours(48);
-            String czmlDocString = satellite.getCzmlDocString(start, end, Optional.empty());
-            String toTopEventsString = satellite.toTopEventDetect(satellite.strToAbsoluteDate("2025-10-11 15:24:41"),
-                    satellite.strToAbsoluteDate("2026-12-13 15:24:41"), new Double[] { 120.0, 40.0, 0.0 }, 200.0);
+            ZonedDateTime startDate = satellite.parseUtcZonedDateTime("2020-09-01 03:57:01");
+            ZonedDateTime end = satellite.parseUtcZonedDateTime("2028-10-01 03:57:01");// startDate.plusHours(24);
+            ZonedDateTime toTopStart = satellite.parseUtcZonedDateTime("2025-12-26 00:48:59");// startDate.plusHours(24);
+            ZonedDateTime toTopEnd = toTopStart.plusHours(24);
+            AbsoluteDate startAbsDate = satellite.getAbsDate(startDate);
+            AbsoluteDate endAbsDate = satellite.getAbsDate(end);
+
+            // 检测两个卫星交会的时间
+            long minute = -1;
+            ZonedDateTime approachEventStart = satellite
+                    .getApproachEvent(startAbsDate, endAbsDate, satellite2, 0, Math.abs(satellite.orbitalAltitude - satellite2.orbitalAltitude))
+                    .plusMinutes(minute);
+            ZonedDateTime approachEventEnd = approachEventStart.plusHours(4);
+            // 检测过境事件
+            AbsoluteDate start2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-04 00:00:00"));
+            AbsoluteDate end2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-13 00:00:00"));// startDate.plusHours(24);
+            List<TimeValue> toTopRes = satellite3.calculateTransits(start2, end2, 120, 40, 20, 2, 1, 5);
+            String timeString = toTopRes.get(0).time.toString();
+            ZonedDateTime toTopDateStart = satellite.dateStringToZonedDateTime(toTopRes.get(0).time);
+            ZonedDateTime toTopDateEnd = toTopDateStart.plusDays(1);
+            // 输出结果
+            String czmlDocString = satellite.getCzmlDocString(approachEventStart, approachEventEnd, Optional.empty());
+            String czmlDocString2 = satellite2.getCzmlDocString(approachEventStart, approachEventEnd, Optional.empty());
+            String czmlDocString3 = satellite3.getCzmlDocString(toTopDateStart, toTopDateEnd, Optional.empty());
             try {
+                // 创建输出目录 - 相对于项目根目录
+                // java.nio.file.Path outputDir =
+                // java.nio.file.Path.of("satellite/src/main/resources/statics/czmlOut");
+                java.nio.file.Path outputDir = java.nio.file.Path.of("D:/ProgramFiles/nginx-1.26.0/html/czml");
+                if (!Files.exists(outputDir)) {
+                    Files.createDirectories(outputDir);
+                }
+
                 // 将生成的czml写入json文件
-                Files.writeString(java.nio.file.Path.of("out.json"), czmlDocString);
-                Files.writeString(java.nio.file.Path.of("toTopEvents.json"), toTopEventsString);
-                System.out.println(isToTopRes);
+                Files.writeString(outputDir.resolve("approach1.czml"), czmlDocString);
+                Files.writeString(outputDir.resolve("approach2.czml"), czmlDocString2);
+                Files.writeString(outputDir.resolve("toTop1.czml"), czmlDocString3);
+                ObjectMapper mapper = new ObjectMapper();
+                mapper.enable(SerializationFeature.INDENT_OUTPUT); // 美化输出
+                mapper.writeValue(outputDir.resolve("toTop1.json").toFile(), toTopRes);
             } catch (Exception e) {
                 System.out.println(e);
             }
