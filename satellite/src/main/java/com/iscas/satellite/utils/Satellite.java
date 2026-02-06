@@ -161,7 +161,7 @@ public class Satellite {
      */
     public ZonedDateTime dateStringToZonedDateTime(String timeStr) {
         // 1. 解析成 LocalDateTime（没有时区信息）
-        LocalDateTime localDateTime = LocalDateTime.parse(timeStr, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        LocalDateTime localDateTime = LocalDateTime.parse(timeStr.substring(0, 29), DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 
         // 2. 指定时区，得到 ZonedDateTime
         return ZonedDateTime.of(localDateTime, ZoneOffset.UTC);
@@ -217,6 +217,19 @@ public class Satellite {
     }
 
     // === 事件检测相关方法 =================
+    /**
+     * 检测卫星过境事件
+     * 
+     * @param startAbsDate 过境计算开始时间
+     * @param endAbsDate   过境计算结束时间
+     * @param longitude    计算目标位置的经度
+     * @param latitude     计算目标位置的纬度
+     * @param altitude     计算目标位置的高
+     * @param minElevation 过境最小仰角
+     * @param maxCheck     过境计算迭代间隔（单位为秒，间隔越小迭代次数越多，计算所用时间越长）
+     * @param threshold    过境计算误差范围
+     * @return
+     */
     public List<TimeValue> calculateTransits(AbsoluteDate startAbsDate, AbsoluteDate endAbsDate, double longitude, double latitude, double altitude,
             double minElevation, double maxCheck, double threshold) {
         List<TimeValue> transitTimes = new ArrayList<>();
@@ -229,8 +242,8 @@ public class Satellite {
         final Frame earthFrame = FramesFactory.getITRF(IERSConventions.IERS_2010, true);
 
         // 构造ElevationDetector
-        ElevationDetector elevationDetector = new ElevationDetector(maxCheck, threshold, observerFrame).withConstantElevation(Math.toRadians(80))
-                .withHandler((s, detector, increasing) -> {
+        ElevationDetector elevationDetector = new ElevationDetector(maxCheck, threshold, observerFrame)
+                .withConstantElevation(Math.toRadians(minElevation)).withHandler((s, detector, increasing) -> {
                     PVCoordinates pvCoordinates = s.getPVCoordinates(earthFrame);
                     GeodeticPoint geodeticPoint = earth.transform(pvCoordinates.getPosition(), earthFrame, s.getDate());
                     double lat = FastMath.toDegrees(geodeticPoint.getLatitude());
@@ -242,7 +255,6 @@ public class Satellite {
                     transitTimes.add(new TimeValue(lon, lat, h, dateString, ele, increasing ? "升轨" : "降轨"));
                     return Action.CONTINUE;
                 });
-        ;
 
         this.propagator.addEventDetector(elevationDetector);
 
@@ -300,7 +312,7 @@ public class Satellite {
         Resource resource2 = resourceLoader.getResource("classpath:/statics/tles/ISS.tle");
         Resource resource3 = resourceLoader.getResource("classpath:/statics/tles/GF-7.tle");
         try (InputStream is = resource.getInputStream(); InputStream is2 = resource2.getInputStream(); InputStream is3 = resource3.getInputStream()) {
-            // 构造一个卫星
+            // 构造卫星1
             String te1 = new String(is.readAllBytes(), StandardCharsets.UTF_8);
             String[] lines = te1.split("\n");
             String[] raw = new String[] { lines[0], lines[1], lines[2] };
@@ -312,37 +324,33 @@ public class Satellite {
             String[] raw2 = new String[] { lines2[0], lines2[1], lines2[2] };
             Satellite satellite2 = new Satellite(raw2, "/statics/orekit-data");
 
-            // 构造卫星2
+            // 构造卫星3
             String te3 = new String(is3.readAllBytes(), StandardCharsets.UTF_8);
             String[] lines3 = te3.split("\n");
             String[] raw3 = new String[] { lines3[0], lines3[1], lines3[2] };
             Satellite satellite3 = new Satellite(raw3, "/statics/orekit-data");
 
-            // 生成czml路径文件示例
-            ZonedDateTime startDate = satellite.parseUtcZonedDateTime("2020-09-01 03:57:01");
-            ZonedDateTime end = satellite.parseUtcZonedDateTime("2028-10-01 03:57:01");// startDate.plusHours(24);
-            ZonedDateTime toTopStart = satellite.parseUtcZonedDateTime("2025-12-26 00:48:59");// startDate.plusHours(24);
-            ZonedDateTime toTopEnd = toTopStart.plusHours(24);
-            AbsoluteDate startAbsDate = satellite.getAbsDate(startDate);
-            AbsoluteDate endAbsDate = satellite.getAbsDate(end);
-
-            // 检测两个卫星交会的时间
+            // 计算卫星1和卫星2交会的时间
             long minute = -1;
+            AbsoluteDate startAbsDate = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2023-09-01 03:57:01"));
+            AbsoluteDate endAbsDate = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2028-10-01 03:57:01"));
             ZonedDateTime approachEventStart = satellite
                     .getApproachEvent(startAbsDate, endAbsDate, satellite2, 0, Math.abs(satellite.orbitalAltitude - satellite2.orbitalAltitude))
                     .plusMinutes(minute);
             ZonedDateTime approachEventEnd = approachEventStart.plusHours(4);
-            // 检测过境事件
-            AbsoluteDate start2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-04 00:00:00"));
-            AbsoluteDate end2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-13 00:00:00"));// startDate.plusHours(24);
-            List<TimeValue> toTopRes = satellite3.calculateTransits(start2, end2, 120, 40, 20, 2, 1, 5);
-            String timeString = toTopRes.get(0).time.toString();
-            ZonedDateTime toTopDateStart = satellite.dateStringToZonedDateTime(toTopRes.get(0).time);
-            ZonedDateTime toTopDateEnd = toTopDateStart.plusDays(1);
-            // 输出结果
+            // 根据交会时间生成对应的czml
             String czmlDocString = satellite.getCzmlDocString(approachEventStart, approachEventEnd, Optional.empty());
             String czmlDocString2 = satellite2.getCzmlDocString(approachEventStart, approachEventEnd, Optional.empty());
+
+            // 计算卫星3过境时间
+            AbsoluteDate start2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-04 00:00:00"));
+            AbsoluteDate end2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-13 00:00:00"));
+            List<TimeValue> toTopRes = satellite3.calculateTransits(start2, end2, 109.62069474947575, 18.327190840495074, 0, 80, 1, 1e-5);
+            ZonedDateTime toTopDateStart = satellite.dateStringToZonedDateTime(toTopRes.get(0).time);
+            ZonedDateTime toTopDateEnd = toTopDateStart.plusDays(1);
+            // 根据过境时间生成对应的czml
             String czmlDocString3 = satellite3.getCzmlDocString(toTopDateStart, toTopDateEnd, Optional.empty());
+
             try {
                 // 创建输出目录 - 相对于项目根目录
                 // java.nio.file.Path outputDir =
