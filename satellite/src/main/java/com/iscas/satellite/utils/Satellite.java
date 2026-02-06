@@ -25,6 +25,8 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 
 import org.apache.commons.math3.util.FastMath;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
+import org.orekit.bodies.CelestialBody;
+import org.orekit.bodies.CelestialBodyFactory;
 import org.orekit.bodies.GeodeticPoint;
 import org.orekit.bodies.OneAxisEllipsoid;
 import org.orekit.data.DataContext;
@@ -71,6 +73,7 @@ public class Satellite {
     public String satName;
     /** 卫星周期 */
     public double orbitalMinutes;
+    /** 卫星轨道高度 */
     public double orbitalAltitude;
 
     /**
@@ -103,7 +106,8 @@ public class Satellite {
             this.orbitalMinutes = (24.0 / revsPerDay) * 60.0;
 
             SpacecraftState state = this.propagator.getInitialState();
-            this.orbitalAltitude = state.getPVCoordinates().getPosition().getNorm() - Constants.WGS84_EARTH_EQUATORIAL_RADIUS;
+            this.orbitalAltitude = state.getPVCoordinates().getPosition().getNorm()
+                    - Constants.WGS84_EARTH_EQUATORIAL_RADIUS;
         } catch (IOException e) {
             throw new RuntimeException("Failed to load orekit-data from classpath", e);
         }
@@ -158,10 +162,12 @@ public class Satellite {
      * 
      * @param timeStr 时间字符串，eg.2025-09-01 03:57:01
      * @return
+     * 
      */
     public ZonedDateTime dateStringToZonedDateTime(String timeStr) {
         // 1. 解析成 LocalDateTime（没有时区信息）
-        LocalDateTime localDateTime = LocalDateTime.parse(timeStr.substring(0, 29), DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        LocalDateTime localDateTime = LocalDateTime.parse(timeStr.substring(0, 29),
+                DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 
         // 2. 指定时区，得到 ZonedDateTime
         return ZonedDateTime.of(localDateTime, ZoneOffset.UTC);
@@ -170,11 +176,13 @@ public class Satellite {
     /**
      * ZonedDateTime转AbsoluteDate
      * 
+     * 
      * @param dateTime
      * @return
      */
     public AbsoluteDate getAbsDate(ZonedDateTime dateTime) {
-        return new AbsoluteDate(dateTime.getYear(), dateTime.getMonthValue(), dateTime.getDayOfMonth(), dateTime.getHour(), dateTime.getMinute(),
+        return new AbsoluteDate(dateTime.getYear(), dateTime.getMonthValue(), dateTime.getDayOfMonth(),
+                dateTime.getHour(), dateTime.getMinute(),
                 dateTime.getSecond() + dateTime.getNano() * 1.0e-9, TimeScalesFactory.getUTC());
     }
     // === 时间转换相关方法 =================
@@ -183,12 +191,14 @@ public class Satellite {
      * 获取某个时间段卫星的路径czml
      * 
      * @param start        开始时间
+     * 
      * @param end          结束时间
      * @param rgbaOptional 轨迹颜色，可选参数
      * @return czml字符串（可用于导出为.czml 或者 .json 文件）
      * @throws Exception
      */
-    public String getCzmlDocString(ZonedDateTime start, ZonedDateTime end, Optional<int[]> rgbaOptional) throws Exception {
+    public String getCzmlDocString(ZonedDateTime start, ZonedDateTime end, Optional<int[]> rgbaOptional)
+            throws Exception {
         if (start == null)
             start = ZonedDateTime.now(ZoneOffset.UTC);
         if (end == null)
@@ -199,24 +209,39 @@ public class Satellite {
     }
 
     class TimeValue {
+        /** 过境时卫星经度 */
         public final double lon;
+        /** 过境时卫星纬度 */
         public final double lat;
+        /** 过境时卫星高 */
         public final double h;
+        /** 过境时间 */
         public final String time;
+        /** 过境时仰角 */
         public final double elevation;
+        /** 升/降轨状态 */
         public final String state;
+        /** 过境时太阳角 */
+        public final double sunAngle;
+        /** 过境时月亮角 */
+        public final double moonAngle;
 
-        public TimeValue(double lon, double lat, double h, String time, double elevation, String state) {
+        public TimeValue(double lon, double lat, double h, String time, double elevation, String state, double sunAngle,
+                double moonAngle) {
             this.lon = lon;
             this.lat = lat;
             this.h = h;
             this.time = time;
             this.elevation = elevation;
             this.state = state;
+
+            this.sunAngle = sunAngle;
+            this.moonAngle = moonAngle;
         }
     }
 
     // === 事件检测相关方法 =================
+
     /**
      * 检测卫星过境事件
      * 
@@ -230,29 +255,54 @@ public class Satellite {
      * @param threshold    过境计算误差范围
      * @return
      */
-    public List<TimeValue> calculateTransits(AbsoluteDate startAbsDate, AbsoluteDate endAbsDate, double longitude, double latitude, double altitude,
+    public List<TimeValue> calculateTransits(AbsoluteDate startAbsDate, AbsoluteDate endAbsDate, double longitude,
+            double latitude, double altitude,
             double minElevation, double maxCheck, double threshold) {
         List<TimeValue> transitTimes = new ArrayList<>();
 
         // 定义观察者的位置
         GeodeticPoint observerPoint = new GeodeticPoint(Math.toRadians(latitude), Math.toRadians(longitude), altitude);
-        OneAxisEllipsoid earth = new OneAxisEllipsoid(Constants.WGS84_EARTH_EQUATORIAL_RADIUS, Constants.WGS84_EARTH_FLATTENING,
+        OneAxisEllipsoid earth = new OneAxisEllipsoid(Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
+                Constants.WGS84_EARTH_FLATTENING,
                 FramesFactory.getITRF(IERSConventions.IERS_2010, true));
         TopocentricFrame observerFrame = new TopocentricFrame(earth, observerPoint, "Observer");
         final Frame earthFrame = FramesFactory.getITRF(IERSConventions.IERS_2010, true);
 
+        // 定义太阳月亮及观察者ITRF位置
+        CelestialBody sun = CelestialBodyFactory.getSun();
+        CelestialBody moon = CelestialBodyFactory.getMoon();
+        PVCoordinates stationITRF = new PVCoordinates(earth.transform(observerPoint));
+
         // 构造ElevationDetector
         ElevationDetector elevationDetector = new ElevationDetector(maxCheck, threshold, observerFrame)
-                .withConstantElevation(Math.toRadians(minElevation)).withHandler((s, detector, increasing) -> {
+                .withConstantElevation(Math.toRadians(minElevation))
+                .withHandler((s, detector, increasing) -> {
                     PVCoordinates pvCoordinates = s.getPVCoordinates(earthFrame);
+                    PVCoordinates stationPosPV = earth.getBodyFrame()
+                            .getTransformTo(FramesFactory.getGCRF(), s.getDate())
+
+                            .transformPVCoordinates(stationITRF);
+                    Vector3D sunPos = sun.getPVCoordinates(s.getDate(), earthFrame).getPosition();
+
+                    Vector3D moonPos = moon.getPVCoordinates(s.getDate(), earthFrame).getPosition();
+                    Vector3D satPos = pvCoordinates.getPosition();
+                    Vector3D stationPos = stationPosPV.getPosition();
+                    Vector3D stationToSun = sunPos.subtract(stationPos);
+                    Vector3D stationToMoon = moonPos.subtract(stationPos);
+                    Vector3D stationToSat = satPos.subtract(stationPos);
+                    double sunAngle = FastMath.toDegrees(Vector3D.angle(stationToSat, stationToSun));
+                    double moonAngle = FastMath.toDegrees(Vector3D.angle(stationToSat, stationToMoon));
+
                     GeodeticPoint geodeticPoint = earth.transform(pvCoordinates.getPosition(), earthFrame, s.getDate());
                     double lat = FastMath.toDegrees(geodeticPoint.getLatitude());
                     double lon = FastMath.toDegrees(geodeticPoint.getLongitude());
                     double h = FastMath.toDegrees(geodeticPoint.getAltitude());
-                    Double ele = FastMath.toDegrees(observerFrame.getElevation(pvCoordinates.getPosition(), earthFrame, s.getDate()));
+                    Double ele = FastMath.toDegrees(
+                            observerFrame.getElevation(pvCoordinates.getPosition(), earthFrame, s.getDate()));
                     AbsoluteDate date = s.getDate();
                     String dateString = date.toString(TimeScalesFactory.getUTC());
-                    transitTimes.add(new TimeValue(lon, lat, h, dateString, ele, increasing ? "升轨" : "降轨"));
+                    transitTimes.add(
+                            new TimeValue(lon, lat, h, dateString, ele, increasing ? "升轨" : "降轨", sunAngle, moonAngle));
                     return Action.CONTINUE;
                 });
 
@@ -274,9 +324,11 @@ public class Satellite {
      * @param maxDistanceThreshold 最大检测距离
      * @return 检测到的交会时间
      */
-    public ZonedDateTime getApproachEvent(AbsoluteDate startAbsDate, AbsoluteDate endAbsDate, Satellite satellite, double minDistanceThreshold,
+    public ZonedDateTime getApproachEvent(AbsoluteDate startAbsDate, AbsoluteDate endAbsDate, Satellite satellite,
+            double minDistanceThreshold,
             double maxDistanceThreshold) {
-        ExtremumApproachDetector approachDetector = new ExtremumApproachDetector(satellite.propagator).withThreshold(1.0e-3);
+        ExtremumApproachDetector approachDetector = new ExtremumApproachDetector(satellite.propagator)
+                .withThreshold(1.0e-3);
 
         approachDetector = approachDetector.withHandler(new EventHandler() {
             @Override
@@ -311,7 +363,9 @@ public class Satellite {
         Resource resource = resourceLoader.getResource("classpath:/statics/tles/STARLINK.tle");
         Resource resource2 = resourceLoader.getResource("classpath:/statics/tles/ISS.tle");
         Resource resource3 = resourceLoader.getResource("classpath:/statics/tles/GF-7.tle");
-        try (InputStream is = resource.getInputStream(); InputStream is2 = resource2.getInputStream(); InputStream is3 = resource3.getInputStream()) {
+        try (InputStream is = resource.getInputStream();
+                InputStream is2 = resource2.getInputStream();
+                InputStream is3 = resource3.getInputStream()) {
             // 构造卫星1
             String te1 = new String(is.readAllBytes(), StandardCharsets.UTF_8);
             String[] lines = te1.split("\n");
@@ -332,10 +386,11 @@ public class Satellite {
 
             // 计算卫星1和卫星2交会的时间
             long minute = -1;
-            AbsoluteDate startAbsDate = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2023-09-01 03:57:01"));
+            AbsoluteDate startAbsDate = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2020-09-01 03:57:01"));
             AbsoluteDate endAbsDate = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2028-10-01 03:57:01"));
             ZonedDateTime approachEventStart = satellite
-                    .getApproachEvent(startAbsDate, endAbsDate, satellite2, 0, Math.abs(satellite.orbitalAltitude - satellite2.orbitalAltitude))
+                    .getApproachEvent(startAbsDate, endAbsDate, satellite2, 0,
+                            Math.abs(satellite.orbitalAltitude - satellite2.orbitalAltitude))
                     .plusMinutes(minute);
             ZonedDateTime approachEventEnd = approachEventStart.plusHours(4);
             // 根据交会时间生成对应的czml
@@ -345,7 +400,9 @@ public class Satellite {
             // 计算卫星3过境时间
             AbsoluteDate start2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-04 00:00:00"));
             AbsoluteDate end2 = satellite.getAbsDate(satellite.parseUtcZonedDateTime("2025-09-13 00:00:00"));
-            List<TimeValue> toTopRes = satellite3.calculateTransits(start2, end2, 109.62069474947575, 18.327190840495074, 0, 80, 1, 1e-5);
+            List<TimeValue> toTopRes = satellite3.calculateTransits(start2, end2, 109.62069474947575,
+                    18.327190840495074, 0, 80, 1,
+                    1e-5);
             ZonedDateTime toTopDateStart = satellite.dateStringToZonedDateTime(toTopRes.get(0).time);
             ZonedDateTime toTopDateEnd = toTopDateStart.plusDays(1);
             // 根据过境时间生成对应的czml
